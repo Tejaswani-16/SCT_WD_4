@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Simple To-Do App (Lists • Edit • Due Date)</title>
+  <style>
+    :root{ 
+      --bg:lavender; 
+      --card:#ffffff; 
+      --muted:#6b7280; 
+      --accent:#2563eb; 
+      --success:#16a34a; 
+      --danger:#ef4444; 
+      --glass:rgba(0,0,0,0.04); 
+      --nameColor:royalblue; /* for names (headings & titles) */
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%; margin:0; font-family:Inter,system-ui,Segoe UI,Roboto,Arial; background:var(--bg); color:#0f172a}
+    .app{max-width:1000px; margin:28px auto; display:grid; grid-template-columns:280px 1fr; gap:16px; padding:16px}
+    @media (max-width:820px){ .app{grid-template-columns:1fr} }
+
+    .card{background:var(--card); border-radius:12px; padding:14px; box-shadow:0 6px 18px rgba(16,24,40,0.06)}
+    header{display:flex; align-items:center; gap:12px; margin-bottom:10px}
+    header h1{font-size:1.15rem; margin:0; color:var(--nameColor); }
+    h2{color:var(--nameColor);}
+    .title{color:var(--nameColor);}
+
+
+    .sidebar .list-item{display:flex; justify-content:space-between; gap:8px; padding:8px; border-radius:8px; cursor:pointer; color:var(--nameColor);}
+    .sidebar .list-item:hover{background:var(--glass)}
+    .sidebar .list-item.active{background:#eef2ff; border:1px solid rgba(37,99,235,0.12)}
+
+    .form-row{display:flex; gap:8px; margin-top:10px}
+    input[type="text"], input[type="datetime-local"], select { padding:8px 10px; border-radius:8px; border:1px solid #e6e9ef; flex:1; background:white }
+    button{padding:8px 10px; border-radius:8px; border:0; cursor:pointer; background:var(--accent); color:white}
+    button.ghost{background:transparent; color:var(--muted); border:1px solid #e6e9ef}
+    button.danger{background:var(--danger)}
+    small.muted{color:var(--muted)}
+
+    .tasks{display:flex; flex-direction:column; gap:8px; margin-top:8px; max-height:62vh; overflow:auto; padding-right:6px}
+    .task{display:grid; grid-template-columns:32px 1fr auto; gap:10px; align-items:center; padding:10px; border-radius:10px; border:1px solid #eef1f6; background:linear-gradient(180deg,#fff,#fbfdff)}
+    .task.completed{opacity:0.6; text-decoration:line-through}
+    .task .title{font-weight:600}
+    .task .meta{font-size:12px; color:var(--muted)}
+    .task .actions{display:flex; gap:6px; align-items:center}
+    .chip{padding:4px 8px; border-radius:999px; background:#f3f4f6; font-size:12px; color:var(--muted)}
+
+    .empty{padding:20px; text-align:center; color:var(--muted); border:1px dashed #e6e9ef; border-radius:10px}
+    .small{font-size:13px}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <!-- Left: Lists -->
+    <aside class="card sidebar">
+      <header><h1>Lists</h1></header>
+
+      <div id="listsContainer" aria-live="polite"></div>
+
+      <form id="addListForm" class="form-row" onsubmit="return false;">
+        <input id="newListName" type="text" placeholder="New list name" required />
+        <button id="addListBtn" type="button">Add</button>
+      </form>
+
+      <div style="margin-top:10px; display:flex; gap:8px;">
+        <button id="renameListBtn" class="ghost" type="button">Rename</button>
+        <button id="deleteListBtn" class="danger" type="button">Delete</button>
+      </div>
+    </aside>
+    <main class="card">
+      <header style="display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <h2 id="currentListTitle" style="margin:0">Tasks</h2>
+          <small id="taskCount" class="muted small"></small>
+        </div>
+        <div class="small muted">Data saved locally in your browser</div>
+      </header>
+
+      <form id="addTaskForm" class="form-row" style="margin-top:12px" onsubmit="return false;">
+        <input id="taskTitle" type="text" placeholder="Task title" required />
+        <input id="taskDue" type="datetime-local" />
+        <button id="addTaskBtn" type="button">Add Task</button>
+      </form>
+
+      <div id="tasks" class="tasks" aria-live="polite" style="margin-top:12px"></div>
+    </main>
+  </div>
+  <script>
+    /* Simple To-do app with lists, edit, mark complete, due date/time, move between lists.
+       Single-file, uses localStorage. */
+
+    const STORAGE_KEY = 'todo_app_v1';
+
+    const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
+
+    function loadState(){
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if(!raw) return { lists: [], selectedListId: null };
+        return JSON.parse(raw);
+      } catch(e){ return { lists: [], selectedListId: null }; }
+    }
+    function saveState(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+
+    function findList(id){ return state.lists.find(l=>l.id===id) || null; }
+    function formatDue(d){
+      if(!d) return 'No due date';
+      const dt = new Date(d);
+      if(isNaN(dt)) return 'Invalid date';
+      return dt.toLocaleString();
+    }
+
+    let state = loadState();
+    if(state.lists.length === 0){
+      state.lists = [
+        { id: uid(), name: 'Personal', tasks: [] },
+        { id: uid(), name: 'Work', tasks: [] }
+      ];
+      state.selectedListId = state.lists[0].id;
+      saveState();
+    }
+    if(!state.selectedListId) state.selectedListId = state.lists[0]?.id || null;
+
+    const listsContainer = document.getElementById('listsContainer');
+    const addListForm = document.getElementById('addListForm');
+    const newListName = document.getElementById('newListName');
+    const addListBtn = document.getElementById('addListBtn');
+    const renameListBtn = document.getElementById('renameListBtn');
+    const deleteListBtn = document.getElementById('deleteListBtn');
+
+    const currentListTitle = document.getElementById('currentListTitle');
+    const taskCount = document.getElementById('taskCount');
+    const addTaskForm = document.getElementById('addTaskForm');
+    const taskTitle = document.getElementById('taskTitle');
+    const taskDue = document.getElementById('taskDue');
+    const addTaskBtn = document.getElementById('addTaskBtn');
+    const tasksEl = document.getElementById('tasks');
+
+    function renderLists(){
+      listsContainer.innerHTML = '';
+      state.lists.forEach(list=>{
+        const div = document.createElement('div');
+        div.className = 'list-item' + (list.id === state.selectedListId ? ' active' : '');
+        div.setAttribute('role','button');
+        div.tabIndex = 0;
+        div.innerHTML = `
+          <span>${escapeHtml(list.name)}</span>
+          <span class="chip">${list.tasks.filter(t=>!t.completed).length}</span>
+        `;
+        div.onclick = ()=> { state.selectedListId = list.id; saveState(); render(); };
+        div.onkeydown = e => { if(e.key === 'Enter') { state.selectedListId = list.id; saveState(); render(); } };
+        listsContainer.appendChild(div);
+      });
+    }
+
+    function renderTasks(){
+      const current = findList(state.selectedListId);
+      currentListTitle.textContent = current ? current.name : 'No list selected';
+      taskCount.textContent = current ? `${current.tasks.length} task(s)` : '';
+      tasksEl.innerHTML = '';
+
+      if(!current) { tasksEl.innerHTML = '<div class="empty">Create or select a list to add tasks.</div>'; return; }
+      if(current.tasks.length === 0){ tasksEl.innerHTML = '<div class="empty">No tasks yet. Add one above ✨</div>'; return; }
+
+      // sort: incomplete first, then by due date (empty last)
+      const tasks = [...current.tasks].sort((a,b)=>{
+        if(a.completed !== b.completed) return a.completed - b.completed;
+        if(a.due && b.due) return new Date(a.due) - new Date(b.due);
+        if(a.due) return -1;
+        if(b.due) return 1;
+        return 0;
+      });
+
+      tasks.forEach(task=>{
+        const row = document.createElement('div');
+        row.className = 'task' + (task.completed ? ' completed' : '');
+        row.dataset.taskId = task.id;
+
+        // Move-to-list select (for organizing)
+        const moveSelect = document.createElement('select');
+        moveSelect.title = 'Move to another list';
+        state.lists.forEach(l=>{
+          const opt = document.createElement('option');
+          opt.value = l.id;
+          opt.textContent = l.name;
+          if(l.id === state.selectedListId) opt.selected = true;
+          moveSelect.appendChild(opt);
+        });
+        moveSelect.onchange = () => moveTask(task.id, moveSelect.value);
+
+        // checkbox
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = !!task.completed;
+        checkbox.onchange = () => toggleComplete(task.id, checkbox.checked);
+
+        const titleWrap = document.createElement('div');
+        titleWrap.style.minWidth = '0';
+        titleWrap.innerHTML = `<div class="title">${escapeHtml(task.title)}</div>
+                               <div class="meta">${escapeHtml(formatDue(task.due))}</div>`;
+
+        const actions = document.createElement('div');
+        actions.className = 'actions';
+        actions.innerHTML = `
+          <button class="ghost" data-action="edit" title="Edit">Edit</button>
+          <button class="ghost" data-action="date" title="Change due date">Date</button>
+          <button class="ghost" data-action="move" title="Move">Move</button>
+          <button class="danger" data-action="delete" title="Delete">Delete</button>
+        `;
+
+        // wire up action buttons
+        actions.querySelector('[data-action="edit"]').onclick = () => editTaskInline(task.id);
+        actions.querySelector('[data-action="date"]').onclick = () => editTaskDueInline(task.id);
+        actions.querySelector('[data-action="move"]').onclick = () => { 
+          // focus the select for moving
+          moveSelect.focus();
+        };
+        actions.querySelector('[data-action="delete"]').onclick = () => deleteTask(task.id);
+
+        // assemble row: checkbox | titleWrap | actions+moveSelect
+        const right = document.createElement('div');
+        right.style.display = 'flex';
+        right.style.gap = '8px';
+        right.style.alignItems = 'center';
+        right.appendChild(moveSelect);
+        right.appendChild(actions);
+
+        row.appendChild(checkbox);
+        row.appendChild(titleWrap);
+        row.appendChild(right);
+        tasksEl.appendChild(row);
+      });
+    }
+
+    function addList(name){
+      const trimmed = name.trim();
+      if(!trimmed) return;
+      const newList = { id: uid(), name: trimmed, tasks: [] };
+      state.lists.push(newList);
+      state.selectedListId = newList.id;
+      saveState(); render();
+    }
+
+    function renameCurrentList(){
+      const cur = findList(state.selectedListId);
+      if(!cur) return alert('No list selected');
+      const name = prompt('Rename list', cur.name);
+      if(name && name.trim()){ cur.name = name.trim(); saveState(); render(); }
+    }
+
+    function deleteCurrentList(){
+      const cur = findList(state.selectedListId);
+      if(!cur) return alert('No list selected');
+      if(!confirm(`Delete list "${cur.name}" and all its tasks?`)) return;
+      state.lists = state.lists.filter(l=>l.id !== cur.id);
+      state.selectedListId = state.lists[0]?.id || null;
+      saveState(); render();
+    }
+
+    function addTask(){
+      const title = taskTitle.value.trim();
+      if(!title) return;
+      const due = taskDue.value || '';
+      const cur = findList(state.selectedListId);
+      if(!cur) return alert('Select a list first');
+      cur.tasks.push({ id: uid(), title, due, completed:false, createdAt: new Date().toISOString() });
+      taskTitle.value = ''; taskDue.value = '';
+      saveState(); render();
+    }
+
+    function toggleComplete(taskId, completed){
+      const cur = findList(state.selectedListId);
+      if(!cur) return;
+      const t = cur.tasks.find(x=>x.id===taskId);
+      if(!t) { /* maybe task was moved; find it */ 
+        for(const l of state.lists){ const tt = l.tasks.find(x=>x.id===taskId); if(tt){ tt.completed = completed; saveState(); render(); return; } }
+        return;
+      }
+      t.completed = completed;
+      saveState(); render();
+    }
+
+    function deleteTask(taskId){
+      for(const l of state.lists){
+        const idx = l.tasks.findIndex(t=>t.id===taskId);
+        if(idx>=0){ 
+          if(!confirm('Delete this task?')) return;
+          l.tasks.splice(idx,1); saveState(); render(); return;
+        }
+      }
+    }
+
+    function editTaskInline(taskId){
+      // find task and its list
+      for(const l of state.lists){
+        const t = l.tasks.find(x=>x.id===taskId);
+        if(t){
+          const newTitle = prompt('Edit task title', t.title);
+          if(newTitle && newTitle.trim()){ t.title = newTitle.trim(); saveState(); render(); }
+          return;
+        }
+      }
+    }
+
+    function editTaskDueInline(taskId){
+      for(const l of state.lists){
+        const t = l.tasks.find(x=>x.id===taskId);
+        if(t){
+          const newDue = prompt('Set due date/time (YYYY-MM-DDThh:mm) — leave empty to remove', t.due || '');
+          if(newDue === null) return;
+          const trimmed = newDue.trim();
+          if(trimmed === ''){ t.due = ''; saveState(); render(); return; }
+          const parsed = new Date(trimmed);
+          if(!isNaN(parsed)) { t.due = parsed.toISOString().slice(0,16); saveState(); render(); return; }
+          t.due = trimmed; saveState(); render(); return;
+        }
+      }
+    }
+
+    function moveTask(taskId, targetListId){
+      if(!targetListId) return;
+      let found = null, fromList = null;
+      for(const l of state.lists){
+        const idx = l.tasks.findIndex(t=>t.id===taskId);
+        if(idx>=0){ found = l.tasks.splice(idx,1)[0]; fromList = l; break; }
+      }
+      if(!found) return;
+      const dest = findList(targetListId);
+      if(!dest) { fromList.tasks.push(found); return; }
+      dest.tasks.push(found);
+      saveState(); render();
+    }
+
+    function escapeHtml(s){ return String(s || '').replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;' }[c])); }
+
+    function render(){ renderLists(); renderTasks(); }
+
+    addListBtn.onclick = () => { addList(newListName.value); newListName.value = ''; newListName.focus(); };
+    newListName.addEventListener('keydown', e=>{ if(e.key==='Enter'){ addListBtn.click(); }});
+    renameListBtn.onclick = renameCurrentList;
+    deleteListBtn.onclick = deleteCurrentList;
+
+    addTaskBtn.onclick = addTask;
+    taskTitle.addEventListener('keydown', e=>{ if(e.key==='Enter') addTaskBtn.click(); });
+
+    document.addEventListener('keydown', e=>{ if((e.ctrlKey || e.metaKey) && e.key==='Enter'){ addTask(); }});
+
+    render();
+  </script>
+</body>
+</html>
